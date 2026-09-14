@@ -105,7 +105,48 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
             self.handle_traffic_eta()
             return
 
-        # 4. Proxy for ABM Tecnologia API endpoints
+                # 4. Handle get_line_details.php directly with complete road polyline
+        if 'get_line_details.php' in self.path:
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+            line_id = params.get('id', [''])[0]
+            hash_code = params.get('hash', ['b10c36fd2123fc0faf30e4524fd65e53'])[0]
+            cached_lines = get_cached_lines(hash_code)
+            for l in cached_lines:
+                if str(l.get('id')) == str(line_id) and l.get('desenhoRota'):
+                    self.send_json_response({
+                        'id': l['id'],
+                        'codigoLinha': l['codigo'],
+                        'descricao': l['nome'],
+                        'ativa': True,
+                        'desenhoRota': l['desenhoRota'],
+                        'pontosDeParada': l.get('pontos', [])
+                    })
+                    return
+
+        # 5. Handle get_public_link_data.php with full lines list
+        if 'get_public_link_data.php' in self.path:
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+            hash_code = params.get('hash', ['b10c36fd2123fc0faf30e4524fd65e53'])[0]
+            cached_lines = get_cached_lines(hash_code)
+            if cached_lines:
+                lines_list = []
+                full_lines_data = {}
+                for l in cached_lines:
+                    lines_list.append({'id': l['id'], 'codigo': l['codigo']})
+                    full_lines_data[l['codigo']] = {
+                        'linha': l['nome'],
+                        'horainicial': l.get('horainicial', ''),
+                        'horafinal': l.get('horafinal', '')
+                    }
+                self.send_json_response({
+                    'grupos': [{'id': '1', 'nome': 'Linhas', 'lines': lines_list}],
+                    'full_lines_data': full_lines_data
+                })
+                return
+
+        # 6. Proxy for ABM Tecnologia API endpoints (live vehicle positions, etc.)
         if self.path.startswith('/api/'):
             endpoint_with_query = self.path[len('/api/'):]
             target_url = f"{TARGET_API}/{endpoint_with_query}"
@@ -115,7 +156,8 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                     target_url,
                     headers={
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Accept': 'application/json'
+                        'Accept': 'application/json',
+                        'Referer': 'https://abmtecnologia.com.br/gerador_links/view.php?hash=b10c36fd2123fc0faf30e4524fd65e53'
                     }
                 )
                 with urllib.request.urlopen(req, timeout=10) as response:
@@ -129,6 +171,9 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(data)
             except Exception as e:
+                if 'get_vehicle_position' in endpoint_with_query:
+                    self.send_json_response({"tracking_enabled": False, "vehicle_active": False}, 200)
+                    return
                 err_msg = json.dumps({"error": str(e)}).encode('utf-8')
                 self.send_response(502)
                 self.send_header('Content-Type', 'application/json')

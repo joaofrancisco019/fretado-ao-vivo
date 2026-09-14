@@ -1,4 +1,4 @@
-const CACHE_NAME = 'fretado-cache-v3.2';
+const CACHE_NAME = 'fretado-cache-v3.3';
 
 self.addEventListener('install', event => {
   self.skipWaiting();

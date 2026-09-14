@@ -42,7 +42,7 @@ let stopMarkers = [];
 // Force clear old Service Worker caches on startup
 if ('caches' in window) {
   caches.keys().then(keys => {
-    keys.filter(k => k !== 'fretado-cache-v3.2').forEach(k => caches.delete(k));
+    keys.filter(k => k !== 'fretado-cache-v3.3').forEach(k => caches.delete(k));
   });
 }
 
@@ -334,7 +334,7 @@ async function loadPublicData() {
             destino: '',
             veiculo: '',
             cachedDetails: {
-              desenhoRota: (l.pontos || []).map(p => ({ latitude: p.latitude, longitude: p.longitude })),
+              desenhoRota: (l.desenhoRota && l.desenhoRota.length > 0) ? l.desenhoRota : (l.pontos || []).map(p => ({ latitude: p.latitude, longitude: p.longitude })),
               pontosDeParada: l.pontos || []
             }
           }));
@@ -374,6 +374,15 @@ async function selectLine(line, targetStopIdx = null) {
   stopSimulation();
 
   let detailsLoaded = false;
+
+  // 1. Immediately render complete curved road polyline if available in cache
+  if (line.cachedDetails && line.cachedDetails.desenhoRota && line.cachedDetails.desenhoRota.length > 0) {
+    state.lineDetails = line.cachedDetails;
+    detailsLoaded = true;
+    renderRouteAndStops();
+    populateStopSelector(targetStopIdx);
+    startTracking();
+  }
 
   // 1. Try API first
   try {
