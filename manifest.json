@@ -1,0 +1,17 @@
+{
+  "name": "Fretado Ao Vivo",
+  "short_name": "Fretado",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#1e293b",
+  "description": "Rastreamento em tempo real e previsão de chegada (ETA) dos ônibus fretados.",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

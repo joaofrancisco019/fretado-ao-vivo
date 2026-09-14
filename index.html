@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Fretado Ao Vivo - Previsão e Rastreamento</title>
+  
+  <!-- PWA Manifest & Meta -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="icon" type="image/svg+xml" href="icon.svg">
+  <link rel="apple-touch-icon" href="icon.svg">
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  
+  <!-- Custom CSS with cache buster -->
+  <link rel="stylesheet" href="style.css?v=3.2">
+</head>
+<body>
+
+  <!-- Top App Header -->
+  <header class="app-header">
+    <div class="header-left">
+      <span class="app-logo">🚌</span>
+      <span class="app-title">Fretado Ao Vivo</span>
+      <span class="pulse-indicator status-offline" id="global-status-dot"></span>
+    </div>
+    
+    <div class="header-actions">
+      <button id="btn-open-lines" class="action-btn line-pill-btn" title="Todas as Linhas">
+        <span id="header-line-name">09 SAIDA</span>
+        <span class="icon-chevron">▼</span>
+      </button>
+      <button id="btn-toggle-simulation" class="action-btn sim-btn" title="Simulação para testes">
+        <span class="sim-icon">🎮</span>
+        <span class="sim-text">Simular</span>
+      </button>
+      <button id="btn-settings" class="action-btn" title="Configurações">
+        ⚙️
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Map -->
+  <main id="map-container">
+    <div id="map"></div>
+
+    <!-- Floating Map Controls (Top Right) -->
+    <div class="map-floating-controls">
+      <button id="btn-toggle-layer" class="float-btn" title="Alternar Mapa (Satélite / Ruas / Noturno)">
+        🛰️
+      </button>
+      <button id="btn-toggle-traffic" class="float-btn active-traffic" title="Trânsito em Tempo Real">
+        🚦
+      </button>
+      <button id="btn-center-bus" class="float-btn" title="Centralizar no Ônibus">
+        🚌
+      </button>
+      <button id="btn-center-user" class="float-btn" title="Minha Localização">
+        📍
+      </button>
+      <button id="btn-center-route" class="float-btn" title="Ver Toda a Rota">
+        🗺️
+      </button>
+      <button id="btn-toggle-zen" class="float-btn" title="Modo Mapa Limpo (Ocultar painéis)">
+        👁️
+      </button>
+    </div>
+
+    <!-- PROMINENT FLOATING ADDRESS SEARCH BAR (Google Maps / Uber Style) -->
+    <div class="main-search-wrapper" id="main-search-wrapper">
+      <div class="main-search-box">
+        <span class="search-lens">🔍</span>
+        <input type="text" id="main-addr-input" placeholder="Digite um endereço ou local (ex: Campinas Hall)..." autocomplete="off">
+        <button id="btn-clear-main-search" class="btn-clear-main hidden" title="Limpar">&times;</button>
+        <button id="btn-gps-main-search" class="btn-gps-main" title="Usar minha localização GPS">📍 GPS</button>
+        <button id="btn-submit-main-search" class="btn-submit-main">Buscar</button>
+      </div>
+
+      <!-- Quick Direction Filters Below Search -->
+      <div class="search-direction-chips">
+        <button class="dir-chip active" data-search-dir="SAIDA">Volta (Saída)</button>
+        <button class="dir-chip" data-search-dir="ENTRADA">Ida (Entrada)</button>
+        <button class="dir-chip" data-search-dir="ALL">Ambos</button>
+        <button class="dir-chip pick-chip" id="btn-main-pick-map">🎯 Tocar no Mapa</button>
+      </div>
+
+      <!-- Autocomplete Dropdown List -->
+      <div class="main-autocomplete-box hidden" id="main-autocomplete-box"></div>
+    </div>
+
+    <!-- BEST MATCH / CLOSEST BUS RESULT CARD (FLOATING OVER MAP) -->
+    <div class="closest-match-card hidden" id="closest-match-card">
+      <div class="closest-card-top">
+        <div class="closest-card-heading">
+          <span class="badge-best-result">🏆 FRETADO MAIS PRÓXIMO</span>
+          <strong id="closest-card-code">09 SAIDA - NOVA ODESSA</strong>
+        </div>
+        <button class="btn-close-card" id="btn-close-closest-card">&times;</button>
+      </div>
+
+      <div class="closest-card-metrics">
+        <div class="metric-block">
+          <span class="m-label">Distância a pé</span>
+          <strong class="m-val highlight-blue" id="closest-card-dist">237m</strong>
+        </div>
+        <div class="metric-sep"></div>
+        <div class="metric-block">
+          <span class="m-label">Caminhada</span>
+          <strong class="m-val" id="closest-card-walk">~3 min</strong>
+        </div>
+        <div class="metric-sep"></div>
+        <div class="metric-block">
+          <span class="m-label">Horário no Ponto</span>
+          <strong class="m-val highlight-yellow" id="closest-card-time">17:15</strong>
+        </div>
+      </div>
+
+      <div class="closest-card-stop-info">
+        <span class="stop-pin-icon">📍</span>
+        <div class="stop-text-group">
+          <span class="stop-number-label" id="closest-card-stop-num">Parada nº 2</span>
+          <span class="stop-address-label" id="closest-card-stop-addr">SPM-065 D Rod. Dom Pedro I, km 136,7 norte</span>
+        </div>
+      </div>
+
+      <div class="closest-card-actions">
+        <a id="closest-card-gmaps-link" href="#" target="_blank" class="btn-gmaps-walk">
+          🗺️ Rota a pé no Google Maps &rarr;
+        </a>
+        <button id="btn-view-all-ranked" class="btn-view-all">Ver outras opções (#2, #3...)</button>
+      </div>
+    </div>
+
+
+
+    <!-- Pick on Map Active Helper Banner -->
+    <div id="pick-mode-banner" class="pick-mode-banner hidden">
+      <span>👉 Toque em qualquer ponto do mapa para ver o fretado mais próximo</span>
+      <button id="btn-cancel-pick" class="btn-cancel-pick">Cancelar</button>
+    </div>
+
+    <!-- Simulation Banner when active -->
+    <div id="sim-banner" class="sim-banner hidden">
+      <span>Modo Simulação Ativo</span>
+      <button id="btn-stop-sim" class="btn-stop-sim">Encerrar</button>
+    </div>
+    <!-- Zen Mode Exit Button -->
+    <button id="btn-exit-zen" class="zen-exit-pill hidden" title="Restaurar painéis">
+      <span>👁️ Restaurar Painéis</span>
+    </button>
+  </main>
+
+  <!-- Bottom Sheet / ETA Card -->
+  <section class="bottom-sheet" id="bottom-sheet">
+    <!-- Traffic Layer Status Badge (Anchored cleanly above the bottom sheet) -->
+    <div class="traffic-indicator-badge" id="traffic-badge" title="Camada de trânsito em tempo real (toque para alternar)">
+      <span class="traffic-pulse"></span>
+      <span id="traffic-badge-text">Trânsito Google Ao Vivo</span>
+    </div>
+    <div class="sheet-drag-handle" id="sheet-handle" title="Toque ou arraste para minimizar/expandir">
+      <span class="handle-bar"></span>
+    </div>
+
+    <!-- Mini Summary Bar (Visible when minimized, and acts as interactive header) -->
+    <div class="sheet-mini-summary" id="sheet-mini-summary" title="Toque para expandir / minimizar">
+      <div class="mini-summary-left">
+        <span class="mini-bus-badge" id="mini-line-code">09 SAIDA</span>
+        <div class="mini-time-group">
+          <span class="mini-clock" id="mini-clock-display">--:--</span>
+          <span class="mini-countdown" id="mini-countdown-display">Aguardando sinal...</span>
+        </div>
+      </div>
+      <div class="mini-summary-right">
+        <button class="btn-sheet-toggle" id="btn-sheet-toggle" title="Minimizar / Expandir painel">
+          <span id="sheet-toggle-icon">▼</span>
+          <span id="sheet-toggle-label">Minimizar</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Full Content Container -->
+    <div class="sheet-full-content" id="sheet-full-content">
+      <div class="eta-card">
+        <div class="eta-main">
+          <div class="eta-time-group">
+            <div class="eta-header-row">
+              <span class="eta-label">Horário no seu ponto:</span>
+              <span class="eta-diff-badge hidden" id="eta-diff-badge">No horário</span>
+            </div>
+            <!-- Clock Time of Arrival -->
+            <div class="eta-clock-value" id="eta-clock-display">--:--</div>
+            <div class="eta-countdown-text" id="eta-countdown">Calculando previsão...</div>
+          </div>
+          <div class="eta-status-pill" id="eta-status-pill">
+            Aguardando sinal
+          </div>
+        </div>
+
+        <!-- Quick Metrics -->
+        <div class="eta-metrics">
+          <div class="metric-item">
+            <span class="metric-title">Distância na rota</span>
+            <span class="metric-value" id="metric-distance">-- km</span>
+          </div>
+          <div class="metric-divider"></div>
+          <div class="metric-item">
+            <span class="metric-title">Velocidade atual</span>
+            <span class="metric-value" id="metric-speed">-- km/h</span>
+          </div>
+          <div class="metric-divider"></div>
+          <div class="metric-item">
+            <span class="metric-title">Paradas restantes</span>
+            <span class="metric-value" id="metric-stops">--</span>
+          </div>
+        </div>
+
+        <!-- Target Stop Selector -->
+        <div class="target-stop-section">
+          <div class="stop-header-row">
+            <label for="stop-selector" class="stop-label">Seu ponto de embarque/desembarque:</label>
+            <span class="stop-scheduled-hint" id="stop-scheduled-hint">Tabela: --:--</span>
+          </div>
+          <div class="stop-selector-wrapper">
+            <select id="stop-selector" class="stop-select">
+              <option value="">Carregando itinerário...</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Collapsible Itinerary Tab -->
+      <div class="itinerary-collapsible">
+        <button class="itinerary-toggle-btn" id="itinerary-toggle">
+          <span>Itinerário & Horários em Tempo Real (<span id="itinerary-count">0</span> paradas)</span>
+          <span class="toggle-arrow" id="itinerary-arrow">▲</span>
+        </button>
+        <div class="itinerary-list-container hidden" id="itinerary-list">
+          <!-- Dynamic list of stops -->
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Modal: Ranking Completo de Linhas para o Endereço -->
+  <div class="modal-overlay hidden" id="modal-ranked-lines">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div>
+          <h3>Fretados Próximos ao Endereço</h3>
+          <p style="font-size:0.8rem;color:var(--text-muted);margin-top:2px;" id="ranked-modal-subtitle">
+            Linhas ordenadas pela distância de caminhada a pé.
+          </p>
+        </div>
+        <button class="modal-close" id="btn-close-ranked-modal">&times;</button>
+      </div>
+
+      <div class="addr-results-wrapper">
+        <div class="ranked-lines-list" id="modal-ranked-cards-container">
+          <!-- Dynamically populated ranking cards -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Seleção de Linhas -->
+  <div class="modal-overlay hidden" id="modal-lines">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>Escolha o seu Fretado</h3>
+        <button class="modal-close" id="btn-close-lines">&times;</button>
+      </div>
+      
+      <div class="tab-controls">
+        <button class="tab-btn active" data-direction="SAIDA">Volta (Saída)</button>
+        <button class="tab-btn" data-direction="ENTRADA">Ida (Entrada)</button>
+      </div>
+
+      <div class="search-box">
+        <input type="text" id="lines-search-input" placeholder="Buscar por linha, bairro, código...">
+      </div>
+
+      <div class="lines-list" id="lines-list-container">
+        <!-- Dynamically populated -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Configurações -->
+  <div class="modal-overlay hidden" id="modal-settings">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3>Configurações</h3>
+        <button class="modal-close" id="btn-close-settings">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="setting-item">
+          <label for="cfg-hash">Hash do Link Público:</label>
+          <input type="text" id="cfg-hash" class="input-text" value="b10c36fd2123fc0faf30e4524fd65e53">
+          <small>Código identificador da empresa na ABM Tecnologia.</small>
+        </div>
+
+        <div class="setting-item">
+          <label for="cfg-google-key">Chave de API do Google Maps (Opcional):</label>
+          <input type="text" id="cfg-google-key" class="input-text" placeholder="AIzaSy...">
+          <small>Se preenchido, usa Google Geocoding e Google Routes Traffic. Se vazio, utiliza os motores gratuitos OSRM e Photon.</small>
+        </div>
+
+        <div class="setting-item">
+          <label for="cfg-map-style">Estilo Padrão do Mapa:</label>
+          <select id="cfg-map-style" class="stop-select">
+            <option value="satellite">🛰️ Satélite Google (Híbrido com Ruas)</option>
+            <option value="streets">🗺️ Ruas Padrão</option>
+            <option value="dark">🌙 Noturno (Dark)</option>
+          </select>
+        </div>
+
+        <div class="setting-item switch-item">
+          <div>
+            <strong>Camada de Trânsito em Tempo Real</strong>
+            <p>Exibir linhas coloridas de fluxo de tráfego do Google no mapa.</p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="cfg-traffic-layer" checked>
+            <span class="slider round"></span>
+          </label>
+        </div>
+
+        <div class="setting-item switch-item">
+          <div>
+            <strong>Alerta Sonoro de Aproximação</strong>
+            <p>Tocar aviso sonoro quando o ônibus estiver a menos de 5 min do ponto.</p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="cfg-sound-alert" checked>
+            <span class="slider round"></span>
+          </label>
+        </div>
+
+        <div class="setting-footer">
+          <button id="btn-save-settings" class="btn-primary">Salvar e Aplicar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notifications -->
+  <div id="toast-container"></div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  
+  <!-- App JS with cache buster -->
+  <script src="app.js?v=3.2"></script>
+</body>
+</html>
