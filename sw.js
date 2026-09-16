@@ -1,4 +1,4 @@
-const CACHE_NAME = 'fretado-cache-v3.3';
+const CACHE_NAME = 'fretado-cache-v3.4';
 
 self.addEventListener('install', event => {
   self.skipWaiting();
@@ -15,7 +15,7 @@ self.addEventListener('activate', event => {
 
 // Network-First strategy: Always fetch fresh content, fallback to cache if offline
 self.addEventListener('fetch', event => {
-  if (event.request.url.includes('/api/')) {
+  if (event.request.url.includes('/api/') || event.request.url.includes('abmtecnologia.com.br')) {
     event.respondWith(fetch(event.request));
     return;
   }

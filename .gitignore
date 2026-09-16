@@ -5,3 +5,4 @@ __pycache__/
 .DS_Store
 *.log
 .system_generated/
+abm_view_script.js

@@ -156,8 +156,10 @@ class CustomHandler(http.server.SimpleHTTPRequestHandler):
                     target_url,
                     headers={
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Accept': 'application/json',
-                        'Referer': 'https://abmtecnologia.com.br/gerador_links/view.php?hash=b10c36fd2123fc0faf30e4524fd65e53'
+                        'Accept': 'application/json, text/javascript, */*; q=0.01',
+                        'Referer': 'https://abmtecnologia.com.br/gerador_links/view.php?hash=b10c36fd2123fc0faf30e4524fd65e53',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Origin': 'https://abmtecnologia.com.br'
                     }
                 )
                 with urllib.request.urlopen(req, timeout=10) as response:

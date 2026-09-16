@@ -6,6 +6,8 @@ const state = {
   trafficLayerActive: localStorage.getItem('abm_traffic_active') !== 'false',
   soundEnabled: localStorage.getItem('abm_sound') !== 'false',
   allLines: [],
+  activeFleet: {}, // key: line.id -> { id, codigo, nome, lat, lng, speed, veiculo, linha, lastSeen }
+  fleetScanTimer: null,
   currentDirection: 'SAIDA',
   addrDirection: 'SAIDA',
   currentLine: null,
@@ -38,11 +40,12 @@ let userMarker = null;
 let destinationMarker = null;
 let walkingPolyline = null;
 let stopMarkers = [];
+let fleetMarkersGroup = null;
 
 // Force clear old Service Worker caches on startup
 if ('caches' in window) {
   caches.keys().then(keys => {
-    keys.filter(k => k !== 'fretado-cache-v3.3').forEach(k => caches.delete(k));
+    keys.filter(k => k !== 'fretado-cache-v3.4').forEach(k => caches.delete(k));
   });
 }
 
@@ -131,6 +134,7 @@ function initMap() {
   if (state.trafficLayerActive) {
     trafficLayer.addTo(map);
   }
+  fleetMarkersGroup = L.layerGroup().addTo(map);
   updateTrafficBadge();
 
   // Handle map clicks (for "Pick on Map" mode)
@@ -296,6 +300,8 @@ async function loadPublicData() {
               const fullLineInfo = (data.full_lines_data && data.full_lines_data[l.codigo]) || {};
               state.allLines.push({
                 id: l.id,
+                fullId: fullLineInfo.id || l.id,
+                idPai: fullLineInfo.idPai || null,
                 codigo: l.codigo,
                 nome: fullLineInfo.linha || l.codigo,
                 horainicial: fullLineInfo.horainicial || '',
@@ -326,6 +332,8 @@ async function loadPublicData() {
         if (Array.isArray(cachedLines) && cachedLines.length > 0) {
           state.allLines = cachedLines.map(l => ({
             id: l.id,
+            fullId: l.id,
+            idPai: null,
             codigo: l.codigo,
             nome: l.nome,
             horainicial: l.horainicial || '',
@@ -357,6 +365,7 @@ async function loadPublicData() {
     if (lineToSelect) {
       selectLine(lineToSelect);
     }
+    startFleetScanner();
   } else {
     showToast('Não foi possível carregar as linhas. Verifique se o servidor está ativo.');
   }
@@ -602,10 +611,64 @@ function renderItineraryList(estimatedArrivals = {}) {
   });
 }
 
-// Vehicle Polling
+// =============================================================
+// REAL-TIME VEHICLE TELEMETRY & FLEET TRACKING ENGINE (v3.4)
+// =============================================================
+
+// Direct client fetch with CORS support + fallback proxy
+async function queryVehiclePosition(lineId, codigo) {
+  if (!lineId || !state.hash) return { tracking_enabled: false, vehicle_active: false };
+
+  // Tier 1: Direct client-side fetch from ABM API
+  // ABM provides native 'Access-Control-Allow-Origin: *'. This allows the user's browser
+  // to fetch live coordinates directly without being blocked by cloud datacenter WAFs!
+  const directUrl = `https://abmtecnologia.com.br/gerador_links/api/get_vehicle_position.php?hash=${state.hash}&id=${lineId}&codigo=${encodeURIComponent(codigo || '')}`;
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4500);
+    const res = await fetch(directUrl, {
+      signal: controller.signal,
+      mode: 'cors',
+      headers: { 'Accept': 'application/json' }
+    });
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data && typeof data === 'object') {
+        return data;
+      }
+    }
+  } catch (directErr) {
+    // Direct fetch might be blocked by restrictive corporate firewalls or offline; try fallback
+  }
+
+  // Tier 2: Serverless proxy endpoint
+  try {
+    const proxyUrl = `/api/get_vehicle_position.php?hash=${state.hash}&id=${lineId}&codigo=${encodeURIComponent(codigo || '')}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(proxyUrl, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data && typeof data === 'object') {
+        return data;
+      }
+    }
+  } catch (proxyErr) {
+    // Local proxy error
+  }
+
+  return { tracking_enabled: false, vehicle_active: false };
+}
+
+// Vehicle Polling for currently selected line
 function startTracking() {
   fetchVehiclePosition();
-  state.trackingTimer = setInterval(fetchVehiclePosition, 5000);
+  if (state.trackingTimer) clearInterval(state.trackingTimer);
+  state.trackingTimer = setInterval(fetchVehiclePosition, 4500);
 }
 
 function stopTracking() {
@@ -618,37 +681,215 @@ function stopTracking() {
 async function fetchVehiclePosition() {
   if (state.simulating || !state.currentLine) return;
 
-  const url = `/api/get_vehicle_position.php?hash=${state.hash}&id=${state.currentLine.id}&codigo=${encodeURIComponent(state.currentLine.codigo)}`;
-  try {
-    const res = await fetch(url);
-    const data = await res.json();
+  const line = state.currentLine;
+  let data = await queryVehiclePosition(line.id, line.codigo);
 
-    const dot = document.getElementById('global-status-dot');
-    const pill = document.getElementById('eta-status-pill');
+  // If primary ID returned inactive, try fullId if different
+  if ((!data || !data.vehicle_active) && line.fullId && line.fullId !== line.id) {
+    const altData = await queryVehiclePosition(line.fullId, line.codigo);
+    if (altData && (altData.vehicle_active || altData.posicao)) {
+      data = altData;
+    }
+  }
 
-    if (data.vehicle_active && data.posicao) {
-      state.busActive = true;
-      dot.className = 'pulse-indicator status-active';
+  const dot = document.getElementById('global-status-dot');
+  const pill = document.getElementById('eta-status-pill');
+
+  const isPositionValid = data && (data.vehicle_active || data.position_available) && data.posicao && data.posicao.latitude && data.posicao.longitude;
+
+  if (isPositionValid) {
+    state.busActive = true;
+    if (dot) dot.className = 'pulse-indicator status-active';
+
+    const speed = Math.round(parseFloat(data.linha?.velocidade || data.posicao?.velocidade || 0));
+    if (pill) {
       pill.className = 'eta-status-pill active';
-      pill.innerText = 'Em trânsito';
+      pill.innerText = speed > 0 ? `Em trânsito (${speed} km/h)` : 'Em trânsito (Ao Vivo)';
+    }
 
-      state.busLocation = {
-        lat: parseFloat(data.posicao.latitude),
-        lng: parseFloat(data.posicao.longitude),
-        speed: data.velocidade || 0
-      };
+    state.busLocation = {
+      lat: parseFloat(data.posicao.latitude),
+      lng: parseFloat(data.posicao.longitude),
+      speed: speed
+    };
 
-      updateBusMarker(state.busLocation.lat, state.busLocation.lng, data.veiculo);
-      recalculateETA();
-    } else {
-      state.busActive = false;
-      dot.className = 'pulse-indicator status-offline';
+    // Store in activeFleet
+    state.activeFleet[line.id] = {
+      id: line.id,
+      codigo: line.codigo,
+      nome: line.nome,
+      lat: state.busLocation.lat,
+      lng: state.busLocation.lng,
+      speed: speed,
+      veiculo: data.veiculo,
+      linha: data.linha,
+      lastSeen: Date.now()
+    };
+
+    updateBusMarker(state.busLocation.lat, state.busLocation.lng, data.veiculo);
+    recalculateETA();
+  } else {
+    state.busActive = false;
+    delete state.activeFleet[line.id];
+    if (dot) dot.className = 'pulse-indicator status-offline';
+    if (pill) {
       pill.className = 'eta-status-pill';
       pill.innerText = 'Fora de rota';
-      resetETADisplay();
     }
-  } catch (err) {
-    console.error('Polling error:', err);
+    resetETADisplay();
+  }
+
+  updateFleetIndicators();
+}
+
+// Background Fleet Scanner (detects active buses in Ida and Volta)
+let isScanningFleet = false;
+async function scanActiveFleet() {
+  if (isScanningFleet || !state.allLines || state.allLines.length === 0) return;
+  isScanningFleet = true;
+
+  try {
+    // Sort current direction lines first
+    const linesToScan = [...state.allLines].sort((a, b) => {
+      const aMatches = a.codigo.toUpperCase().includes(state.currentDirection);
+      const bMatches = b.codigo.toUpperCase().includes(state.currentDirection);
+      if (aMatches && !bMatches) return -1;
+      if (!aMatches && bMatches) return 1;
+      return 0;
+    });
+
+    const batchSize = 6;
+    for (let i = 0; i < linesToScan.length; i += batchSize) {
+      const batch = linesToScan.slice(i, i + batchSize);
+      await Promise.all(batch.map(async (l) => {
+        // Skip current line if active (already polled by fetchVehiclePosition)
+        if (state.currentLine && l.id === state.currentLine.id && state.busActive) {
+          return;
+        }
+
+        try {
+          const data = await queryVehiclePosition(l.id, l.codigo);
+          const hasPosition = data && (data.vehicle_active || data.position_available) && data.posicao && data.posicao.latitude && data.posicao.longitude;
+          if (hasPosition) {
+            state.activeFleet[l.id] = {
+              id: l.id,
+              codigo: l.codigo,
+              nome: l.nome,
+              lat: parseFloat(data.posicao.latitude),
+              lng: parseFloat(data.posicao.longitude),
+              speed: Math.round(parseFloat(data.linha?.velocidade || data.posicao?.velocidade || 0)),
+              veiculo: data.veiculo,
+              linha: data.linha,
+              lastSeen: Date.now()
+            };
+          } else {
+            if (state.activeFleet[l.id] && Date.now() - state.activeFleet[l.id].lastSeen > 12000) {
+              delete state.activeFleet[l.id];
+            }
+          }
+        } catch (e) {
+          // ignore scan error
+        }
+      }));
+    }
+  } finally {
+    isScanningFleet = false;
+    updateFleetIndicators();
+  }
+}
+
+function startFleetScanner() {
+  if (state.fleetScanTimer) clearInterval(state.fleetScanTimer);
+  scanActiveFleet();
+  state.fleetScanTimer = setInterval(scanActiveFleet, 12000);
+}
+
+// Global selector helper for popups
+window.selectLineById = function(id) {
+  const target = state.allLines.find(l => String(l.id) === String(id));
+  if (target) {
+    selectLine(target);
+    showToast(`🚌 Linha ${target.codigo} selecionada!`);
+  }
+};
+
+function updateFleetIndicators() {
+  const activeList = Object.values(state.activeFleet);
+  const activeCount = activeList.length;
+
+  // 1. Update Header Badge
+  const headerBadge = document.getElementById('header-fleet-badge');
+  const fleetLiveCount = document.getElementById('fleet-live-count');
+  if (headerBadge && fleetLiveCount) {
+    if (activeCount > 0) {
+      fleetLiveCount.innerText = activeCount;
+      headerBadge.classList.remove('hidden');
+    } else {
+      headerBadge.classList.add('hidden');
+    }
+  }
+
+  // 2. Update Modal Direction Tab Badges
+  let saidaCount = 0;
+  let entradaCount = 0;
+  activeList.forEach(item => {
+    if (item.codigo.toUpperCase().includes('SAIDA')) saidaCount++;
+    if (item.codigo.toUpperCase().includes('ENTRADA')) entradaCount++;
+  });
+
+  const tabSaida = document.getElementById('tab-count-saida');
+  const tabEntrada = document.getElementById('tab-count-entrada');
+  const tabLive = document.getElementById('tab-count-live');
+  if (tabSaida) {
+    tabSaida.innerText = saidaCount;
+    tabSaida.classList.toggle('hidden', saidaCount === 0);
+  }
+  if (tabEntrada) {
+    tabEntrada.innerText = entradaCount;
+    tabEntrada.classList.toggle('hidden', entradaCount === 0);
+  }
+  if (tabLive) {
+    tabLive.innerText = activeCount;
+    tabLive.classList.toggle('hidden', activeCount === 0);
+  }
+
+  // 3. Re-render modal if open
+  const modal = document.getElementById('modal-lines');
+  if (modal && !modal.classList.contains('hidden')) {
+    renderLinesModal();
+  }
+
+  // 4. Update Secondary Fleet Bus Markers on Map
+  if (map && fleetMarkersGroup) {
+    fleetMarkersGroup.clearLayers();
+    activeList.forEach(item => {
+      // If this is currently selected line, the main busMarker represents it
+      if (state.currentLine && String(item.id) === String(state.currentLine.id)) return;
+
+      const shortCode = item.codigo.split(' ')[0] || item.codigo;
+      const icon = L.divIcon({
+        className: 'fleet-bus-marker-icon',
+        html: `<div class="fleet-bus-marker-bubble" title="${item.codigo}"><span>🚌</span> <span>${shortCode}</span></div>`,
+        iconSize: [54, 24],
+        iconAnchor: [27, 12]
+      });
+
+      const m = L.marker([item.lat, item.lng], { icon, zIndexOffset: 800 });
+      const veicStr = item.veiculo ? `<br>Veículo: <b>${item.veiculo.numero}</b> (${item.veiculo.placa})` : '';
+      const spdStr = item.speed ? `<br>Velocidade: <b>${item.speed} km/h</b>` : '';
+      m.bindPopup(`
+        <div style="font-size:0.85rem;line-height:1.4;">
+          <strong style="color:#10b981;">🟢 ${item.codigo} (Ao Vivo)</strong><br>
+          <span style="font-size:0.78rem;color:#94a3b8;">${item.nome}</span>
+          ${veicStr}
+          ${spdStr}
+          <div style="margin-top:8px;">
+            <button style="background:#2563eb;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:0.75rem;cursor:pointer;font-weight:700;" onclick="window.selectLineById('${item.id}');">Acompanhar esta Linha &raquo;</button>
+          </div>
+        </div>
+      `);
+      fleetMarkersGroup.addLayer(m);
+    });
   }
 }
 
@@ -668,8 +909,9 @@ function updateBusMarker(lat, lng, veiculo) {
     busMarker.setLatLng(latLng);
   }
 
-  const veiculoInfo = veiculo ? `<br>Veículo: ${veiculo.numero} (${veiculo.placa})` : '';
-  busMarker.bindPopup(`<b>Ônibus em Movimento</b>${veiculoInfo}`);
+  const veiculoInfo = veiculo ? `<br>Veículo: <b>${veiculo.numero}</b> (${veiculo.placa})` : '';
+  const spd = state.busLocation && state.busLocation.speed ? `<br>Velocidade: <b>${state.busLocation.speed} km/h</b>` : '';
+  busMarker.bindPopup(`<b>${state.currentLine ? state.currentLine.codigo : 'Ônibus'} em Trânsito</b>${veiculoInfo}${spd}`);
 }
 
 // -------------------------------------------------------------
@@ -831,12 +1073,26 @@ function resetETADisplay() {
 
   document.getElementById('eta-clock-display').innerText = schedTime;
   const miniResetClock = document.getElementById('mini-clock-display'); if (miniResetClock) miniResetClock.innerText = schedTime;
-  document.getElementById('eta-countdown').innerText = 'Horário de tabela (Ônibus fora de rota)';
-  const miniResetCd = document.getElementById('mini-countdown-display'); if (miniResetCd) miniResetCd.innerText = 'Tabela (Fora de rota)';
+
+  let schedDesc = 'Horário de tabela (Ônibus fora de rota)';
+  if (state.currentLine && state.currentLine.horainicial) {
+    schedDesc = `Horário programado (${state.currentLine.horainicial} às ${state.currentLine.horafinal || 'fim'})`;
+  }
+  document.getElementById('eta-countdown').innerText = schedDesc;
+  const miniResetCd = document.getElementById('mini-countdown-display');
+  if (miniResetCd) {
+    miniResetCd.innerText = state.currentLine && state.currentLine.horainicial ? `Tabela (${state.currentLine.horainicial})` : 'Tabela (Fora de rota)';
+  }
+
   document.getElementById('metric-distance').innerText = '-- km';
   document.getElementById('metric-speed').innerText = '-- km/h';
   document.getElementById('metric-stops').innerText = '--';
   document.getElementById('eta-diff-badge').classList.add('hidden');
+
+  if (busMarker && map) {
+    map.removeLayer(busMarker);
+    busMarker = null;
+  }
 }
 
 // -------------------------------------------------------------
@@ -1337,22 +1593,71 @@ function renderLinesModal() {
   const search = (searchInput ? searchInput.value : '').toLowerCase();
 
   const filtered = state.allLines.filter(l => {
-    const matchesDir = l.codigo.toUpperCase().includes(state.currentDirection);
+    let matchesDir = false;
+    if (state.currentDirection === 'LIVE') {
+      matchesDir = Boolean(state.activeFleet[l.id]);
+    } else {
+      matchesDir = l.codigo.toUpperCase().includes(state.currentDirection);
+    }
     const matchesSearch = l.codigo.toLowerCase().includes(search) || l.nome.toLowerCase().includes(search);
     return matchesDir && matchesSearch;
   });
 
+  // Sort: active lines first, then alphabetical/numerical
+  filtered.sort((a, b) => {
+    const aActive = Boolean(state.activeFleet[a.id]);
+    const bActive = Boolean(state.activeFleet[b.id]);
+    if (aActive && !bActive) return -1;
+    if (!aActive && bActive) return 1;
+    return a.codigo.localeCompare(b.codigo, undefined, { numeric: true });
+  });
+
+  if (filtered.length === 0) {
+    const isLiveTab = state.currentDirection === 'LIVE';
+    container.innerHTML = `
+      <div style="text-align:center;padding:36px 16px;color:var(--text-muted);">
+        <p style="font-size:1.1rem;margin-bottom:8px;">${isLiveTab ? '🚌 Nenhum fretado em trânsito no momento.' : 'Nenhum fretado encontrado.'}</p>
+        <p style="font-size:0.78rem;line-height:1.5;">
+          ${isLiveTab
+            ? 'Os veículos transmitem posição ao vivo durante os horários das viagens (Ida: 06h–08h | Volta: 17h–19h). Assim que um veículo iniciar a rota, ele aparecerá aqui com selo verde!'
+            : 'Tente alterar os termos de busca ou mudar para a aba de Volta ou Ida.'}
+        </p>
+      </div>
+    `;
+    return;
+  }
+
   filtered.forEach(line => {
     const card = document.createElement('div');
-    const isSelected = state.currentLine && state.currentLine.id === line.id;
-    card.className = `line-card ${isSelected ? 'active' : ''}`;
+    const isSelected = state.currentLine && String(state.currentLine.id) === String(line.id);
+    const activeInfo = state.activeFleet[line.id];
+    const isLive = Boolean(activeInfo);
+
+    card.className = `line-card ${isSelected ? 'active' : ''} ${isLive ? 'is-live' : ''}`;
+
+    let liveBadge = '';
+    if (isLive) {
+      const veic = activeInfo.veiculo ? `Carro ${activeInfo.veiculo.numero} (${activeInfo.veiculo.placa})` : 'Veículo em rota';
+      const spd = activeInfo.speed ? ` • ${activeInfo.speed} km/h` : '';
+      liveBadge = `
+        <div class="line-live-badge">
+          <span class="live-pulse-dot"></span>
+          <span>AO VIVO</span>
+          <span class="live-veic-info">${veic}${spd}</span>
+        </div>
+      `;
+    }
+
     card.innerHTML = `
-      <div>
-        <strong>${line.codigo}</strong>
+      <div style="flex:1;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <strong>${line.codigo}</strong>
+          ${liveBadge}
+        </div>
         <p style="font-size:0.8rem;color:var(--text-muted);margin-top:2px;">${line.nome}</p>
-        ${line.horainicial ? `<span style="font-size:0.72rem;color:var(--accent-blue);">Horário: ${line.horainicial} - ${line.horafinal}</span>` : ''}
+        ${line.horainicial ? `<span style="font-size:0.72rem;color:var(--accent-blue);">Horário programado: ${line.horainicial} - ${line.horafinal}</span>` : ''}
       </div>
-      <span style="font-size:1.2rem;color:var(--text-muted);">&#8250;</span>
+      <span style="font-size:1.2rem;color:var(--text-muted);margin-left:8px;">&#8250;</span>
     `;
     card.addEventListener('click', () => selectLine(line));
     container.appendChild(card);
@@ -1412,6 +1717,18 @@ function toggleZenMode() {
 function setupEvents() {
   // Top header line button
   safeAddListener('btn-open-lines', 'click', () => {
+    scanActiveFleet();
+    renderLinesModal();
+    const modal = document.getElementById('modal-lines');
+    if (modal) modal.classList.remove('hidden');
+  });
+
+  safeAddListener('header-fleet-badge', 'click', () => {
+    document.querySelectorAll('[data-direction]').forEach(b => {
+      b.classList.toggle('active', b.dataset.direction === 'LIVE');
+    });
+    state.currentDirection = 'LIVE';
+    scanActiveFleet();
     renderLinesModal();
     const modal = document.getElementById('modal-lines');
     if (modal) modal.classList.remove('hidden');
@@ -1426,8 +1743,9 @@ function setupEvents() {
   document.querySelectorAll('[data-direction]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       document.querySelectorAll('[data-direction]').forEach(b => b.classList.remove('active'));
-      e.target.classList.add('active');
-      state.currentDirection = e.target.dataset.direction;
+      const target = e.currentTarget || e.target;
+      target.classList.add('active');
+      state.currentDirection = target.dataset.direction;
       renderLinesModal();
     });
   });

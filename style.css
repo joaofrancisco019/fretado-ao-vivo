@@ -1463,3 +1463,130 @@ input:checked + .slider:before {
   display: inline-block;
   line-height: 1;
 }
+
+/* ========================================================= */
+/* LIVE FLEET & REAL-TIME TRACKING STYLES (v3.4)             */
+/* ========================================================= */
+.line-card.is-live {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.55);
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.15);
+}
+
+.line-card.is-live:hover {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: #10b981;
+}
+
+.line-card.active.is-live {
+  background: rgba(16, 185, 129, 0.28);
+  border-color: #10b981;
+  box-shadow: 0 0 16px rgba(16, 185, 129, 0.35);
+}
+
+.line-live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(16, 185, 129, 0.2);
+  border: 1px solid rgba(16, 185, 129, 0.6);
+  color: #34d399;
+  border-radius: 9999px;
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.live-pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+  animation: live-dot-pulse 1.4s infinite ease-in-out;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+@keyframes live-dot-pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+    box-shadow: 0 0 8px #10b981;
+  }
+  50% {
+    transform: scale(1.35);
+    opacity: 0.7;
+    box-shadow: 0 0 14px #34d399;
+  }
+}
+
+.live-veic-info {
+  font-weight: 600;
+  color: #cbd5e1;
+  font-size: 0.68rem;
+  margin-left: 2px;
+  opacity: 0.9;
+}
+
+.tab-live-badge {
+  background: #10b981;
+  color: #ffffff;
+  border-radius: 9999px;
+  padding: 1px 6px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  margin-left: 4px;
+}
+
+.header-fleet-pill {
+  background: rgba(16, 185, 129, 0.16);
+  border: 1px solid rgba(16, 185, 129, 0.45);
+  color: #34d399;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 6px;
+  transition: all 0.2s;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.header-fleet-pill:hover {
+  background: rgba(16, 185, 129, 0.28);
+  border-color: #10b981;
+}
+
+/* Secondary Fleet Bus Markers on Map */
+.fleet-bus-marker-icon {
+  background: none;
+  border: none;
+}
+
+.fleet-bus-marker-bubble {
+  background: rgba(15, 23, 42, 0.92);
+  border: 1.5px solid #10b981;
+  color: #ffffff;
+  border-radius: 12px;
+  padding: 2px 7px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6), 0 0 10px rgba(16, 185, 129, 0.4);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  transform: translateY(-50%);
+  transition: transform 0.2s;
+}
+
+.fleet-bus-marker-bubble:hover {
+  transform: translateY(-50%) scale(1.12);
+  border-color: #34d399;
+}
